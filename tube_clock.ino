@@ -1,20 +1,24 @@
-#include "LedControl.h"
-#include "RTClib.h"
+#include <LedControl.h>
+#include <RTClib.h>
 #include <Wire.h>
 #include <MD_UISwitch.h>
 #include <MD_YX5300.h>
-const uint8_t ARDUINO_RX = 4;    // connect to TX of MP3 Player module
-const uint8_t ARDUINO_TX = 5;    // connect to RX of MP3 Player module
-const uint8_t PLAY_FOLDER = 1;   // tracks are all placed in this folder
+#include <FastLED.h>
+#include <MD_DS3231.h>
 
-const uint8_t SW_PIN[] = { 9, 10, 11 };
-MD_YX5300 mp3(ARDUINO_RX, ARDUINO_TX);
+
+//************Pins*****************//
+#define ARDUINO_RX 4    // connect to TX of MP3 Player module
+#define ARDUINO_TX 5    // connect to RX of MP3 Player module
+#define PLAY_FOLDER 1   // tracks are all placed in this folder
+const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET MENU' // Button + // Button -
 bool playerPause = true;  // true if player is currently paused
 
+MD_YX5300 mp3(ARDUINO_RX, ARDUINO_TX);
 MD_UISwitch_Digital *BTN[ARRAY_SIZE(SW_PIN)];
+RTC_DS3231 rtc;
 
 #define FASTLED_ALLOW_INTERRUPTS 0
-#include <FastLED.h>
 FASTLED_USING_NAMESPACE
 
 #define DATA_PIN            8
@@ -24,13 +28,8 @@ FASTLED_USING_NAMESPACE
 #define COLOR_ORDER         GRB
 
 CRGB leds[NUM_LEDS];
-RTC_DS3231 rtc;
-//char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
-//************Button*****************//
-int P1=9; // Button SET MENU'
-int P2=10; // Button +
-int P3=11; // Button -
+
 //************Variables**************//
 int hourupg;
 int minupg;
@@ -45,6 +44,35 @@ LedControl lc=LedControl(7,5,6,1);
 
 unsigned long delaytime=200;
 
+// Define as 1 if alarm time to be initialised from variables, otherwise use RTC values
+#define INIT_ALM_DEFAULTS 0
+// Alarm setting registers
+uint8_t almH = 7, almM = 0;         // alm values, including defaults
+boolean almEnabled = true;
+#define ALARM_ON_TYPE   DS3231_ALM_HM     // type of alarm set to turn on
+#define ALARM_OFF_TYPE  DS3231_ALM_DDHM   // type of alarm set to turn off
+
+// Alarm state machine values
+enum almFSM_t { AS_IDLE, AS_SETTING, AS_TRIGGERED };
+almFSM_t almState = AS_IDLE;
+
+
+//************DisplayFuncs**************//
+void displayUpdate(void)
+// Callback function for the RTC library
+// Display the RTC values for time and alarm2
+{
+  printTime();
+  if (almState != AS_SETTING)
+  {
+    RTC.readAlarm2();
+    almH = RTC.h;
+    almM = RTC.m;
+    printAlarm();
+  }
+}
+
+
 void printNum(int v, int leftPost, bool dPoint = false){
   int ones;
   int tens;
@@ -53,6 +81,30 @@ void printNum(int v, int leftPost, bool dPoint = false){
   tens=v%10;
   lc.setDigit(0,leftPost,(byte)tens,false);
   lc.setDigit(0,leftPost - 1,(byte)ones, dPoint);
+}
+
+void printChar(char c, int digit, bool dPoint = false){
+  // There are only a few characters that make sense here :
+  // '0','1','2','3','4','5','6','7','8','9','0',
+  // 'A','b','c','d','E','F','H','L','P',
+  lc.setChar(0, digit, c, dPoint);
+}
+
+void printByte(byte b, int digit){
+  // 0x05 r, 0x1c u, B00010000 i, 0x15 n, 0x1D o, 0x0f t
+  /*
+   *  _6_
+   * |   |
+   * 1   5
+   * |_0_|
+   * |   |
+   * 2   4
+   * |_3_|
+   * 
+   * 7-6-5-4-3-2-1-0 = byte
+   * 0 0 0 0 1 1 1 1 = 't' = 0x0F
+   */
+  lc.setRow(0, digit, b);
 }
 
 void printTime(){
@@ -82,6 +134,47 @@ void printTemp(){
   printNum(t, 3);
 }
 
+void printAlarm(void)
+// Display the alarm setting on the display
+{
+  // Status indicator
+  if (almState == AS_SETTING){
+      printChar('A', 5, false);
+      printChar('L', 4, false);
+    }
+  else if (almEnabled){
+     printChar('A', 5, false);
+     printChar('L', 4, true);
+    }
+  else {
+     printChar('A', 5, false);
+     printChar('L', 4, false);  
+    }
+    
+    
+  // Alarm time
+  printNum(almH, 3, true);
+  printNum(almM, 1, false);  
+}
+
+void setMyAlarm(void)
+// Set Alarm 2 values in the RTC 
+{
+  RTC.yyyy = RTC.mm = RTC.dd = 0;
+  RTC.h = almH;
+  RTC.m = almM;
+  RTC.s = RTC.dow = 0;
+  if (almEnabled)
+    RTC.writeAlarm2(ALARM_ON_TYPE);
+  else
+    RTC.writeAlarm2(ALARM_OFF_TYPE);
+}
+
+void doAlert()
+// Buzz piezo buzzer, not much to do here
+{
+  mp3.playStart();
+}
 /////////////////////////////////////
 
 void readSerialInput(){
@@ -121,7 +214,7 @@ void checkButtons(const char* buttonName, MD_UISwitch::keyResult_t state)
 //    return;
     
   // check if you press the SET button and increase the menu index
-  if(state == MD_UISwitch::KEY_DOWN)
+  if(state == MD_UISwitch::KEY_PRESS)
   {
    menu=menu+1;
   }
@@ -351,12 +444,31 @@ void setup() {
     // January 21, 2014 at 3am you would call:
      rtc.adjust(DateTime(2020, 2, 26, 21, 0, 0));
   }  
-  // put your setup code here, to run once:
+
+    // RTC global initialisation
+  RTC.control(DS3231_12H, DS3231_OFF);  // 24 hour clock
+  
+  // Alarm 1 - initialise the 1 second alarm for screen updates
+  RTC.setAlarm1Callback(displayUpdate);
+  RTC.setAlarm1Type(DS3231_ALM_SEC);
+  
+  // Alarm 2 - initialise the alarm
+#if INIT_ALM_DEFAULTS
+  setMyAlarm();
+#else 
+  RTC.setAlarm2Type(ALARM_OFF_TYPE);
+#endif
+   
+  almState = AS_IDLE;
+  
+  // wake up MAX72XX from power saving mode
   lc.shutdown(0,false);
   /* Set the brightness to a medium values */
   lc.setIntensity(0,15);
   /* and clear the display */
   lc.clearDisplay(0);
+  // set number of digits 6
+  lc.setScanLimit(0, 5);
 
   FastLED.addLeds<LED_TYPE,DATA_PIN,COLOR_ORDER>(leds, NUM_LEDS)
         .setCorrection( TypicalLEDStrip );
@@ -366,11 +478,73 @@ void setup() {
   mp3.begin();
   mp3.setSynchronous(true);
   mp3.playFolderRepeat(PLAY_FOLDER);
+    
+  displayUpdate();
 }
 
 void loop() {
 //  printTime();
 //  delay(delaytime);
+  // screen update through callback every second
+  RTC.checkAlarm1();
+
+  // If the alarm has gone off, overrides any other state
+  if (RTC.checkAlarm2()) 
+    almState = AS_TRIGGERED;
+
+//  switch (almState) // Alm Finite State Machine
+//  {
+//    case AS_IDLE:     // IDLE state - usually in this state 
+//      switch (c)
+//      {
+//        case 'S':     // Select has been pressed, ALM setting mode has been requested
+//          almState = AS_SETTING;
+//          RTC.readAlarm2(); // get the current values into the temp values, even if we do this every screen update
+//          almH = RTC.h;
+//          almM = RTC.m;
+//          printAlarm();
+//          break;
+//        
+//        case 'U':     // Up has been pressed, ALM on/off toggle
+//          almEnabled = !almEnabled;
+//          if (almEnabled) 
+//            RTC.setAlarm2Type(ALARM_ON_TYPE);
+//          else
+//            RTC.setAlarm2Type(ALARM_OFF_TYPE);
+//          printAlarm();
+//          break;
+//      }        
+//      break;
+//      
+//    case AS_SETTING:  // SETTING state - process the keys
+//      switch (c)
+//      {
+//        case 'S':     // Select key - conclude setting mode and write the new alm time
+//          almState = AS_IDLE;
+//          setMyAlarm();       
+//          break;
+//          
+//        case 'L':     // Left key - increment the alm hour
+//          almH = (almH + 1) % 24;
+//          printAlarm();
+//          break;
+//      
+//        case 'R':     // Right Key - increment the alm minute
+//          almM = (almM + 1) % 60;
+//          printAlarm();
+//          break;
+//      }       
+//      break;
+//      
+//    case AS_TRIGGERED:  // TRIGGERED state - do whatever to signal alarm
+//      doBuzzAlert();
+//      almState = AS_IDLE;
+//      break;
+//      
+//    default:
+//      almState = AS_IDLE;
+//  }
+    
   mp3.check();        // run the mp3 receiver
   readSerialInput();
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
