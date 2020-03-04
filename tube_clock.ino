@@ -4,12 +4,11 @@
 #include <MD_UISwitch.h>
 #include <MD_YX5300.h>
 #include <FastLED.h>
-#include <MD_DS3231.h>
 
 
 //************Pins*****************//
-#define ARDUINO_RX 4    // connect to TX of MP3 Player module
-#define ARDUINO_TX 5    // connect to RX of MP3 Player module
+#define ARDUINO_RX 5    // connect to TX of MP3 Player module
+#define ARDUINO_TX 4    // connect to RX of MP3 Player module
 #define PLAY_FOLDER 1   // tracks are all placed in this folder
 const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET MENU' // Button + // Button -
 bool playerPause = true;  // true if player is currently paused
@@ -42,36 +41,9 @@ int menu=0;
 
 LedControl lc=LedControl(7,5,6,1);
 
-unsigned long delaytime=200;
-
-// Define as 1 if alarm time to be initialised from variables, otherwise use RTC values
-#define INIT_ALM_DEFAULTS 0
-// Alarm setting registers
-uint8_t almH = 7, almM = 0;         // alm values, including defaults
-boolean almEnabled = true;
-#define ALARM_ON_TYPE   DS3231_ALM_HM     // type of alarm set to turn on
-#define ALARM_OFF_TYPE  DS3231_ALM_DDHM   // type of alarm set to turn off
-
-// Alarm state machine values
-enum almFSM_t { AS_IDLE, AS_SETTING, AS_TRIGGERED };
-almFSM_t almState = AS_IDLE;
 
 
 //************DisplayFuncs**************//
-void displayUpdate(void)
-// Callback function for the RTC library
-// Display the RTC values for time and alarm2
-{
-  printTime();
-  if (almState != AS_SETTING)
-  {
-    RTC.readAlarm2();
-    almH = RTC.h;
-    almM = RTC.m;
-    printAlarm();
-  }
-}
-
 
 void printNum(int v, int leftPost, bool dPoint = false){
   int ones;
@@ -134,130 +106,70 @@ void printTemp(){
   printNum(t, 3);
 }
 
-void printAlarm(void)
-// Display the alarm setting on the display
-{
-  // Status indicator
-  if (almState == AS_SETTING){
-      printChar('A', 5, false);
-      printChar('L', 4, false);
-    }
-  else if (almEnabled){
-     printChar('A', 5, false);
-     printChar('L', 4, true);
-    }
-  else {
-     printChar('A', 5, false);
-     printChar('L', 4, false);  
-    }
-    
-    
-  // Alarm time
-  printNum(almH, 3, true);
-  printNum(almM, 1, false);  
-}
 
-void setMyAlarm(void)
-// Set Alarm 2 values in the RTC 
-{
-  RTC.yyyy = RTC.mm = RTC.dd = 0;
-  RTC.h = almH;
-  RTC.m = almM;
-  RTC.s = RTC.dow = 0;
-  if (almEnabled)
-    RTC.writeAlarm2(ALARM_ON_TYPE);
-  else
-    RTC.writeAlarm2(ALARM_OFF_TYPE);
-}
-
-void doAlert()
-// Buzz piezo buzzer, not much to do here
-{
-  mp3.playStart();
-}
 /////////////////////////////////////
-
-void readSerialInput(){
-  Serial.setTimeout(5000);
-  while (Serial.available() > 0) {
-
-    // look for the next valid integer in the incoming serial stream:
-    Serial.println("Set time.");
-  
-    Serial.println("Hours:");
-    hourupg = Serial.parseInt();
-    Serial.println("Minutes:");
-    minupg = Serial.parseInt();
-    Serial.println("Day:");
-    dayupg = Serial.parseInt();
-    Serial.println("Month:");
-    monthupg = Serial.parseInt();
-    Serial.println("Year:");
-    yearupg = Serial.parseInt();
-    Serial.println("Hit Enter to set the time.");
-
-    if (Serial.read() == '\n') {
-      StoreAgg();
-      delay(500);
-    }
-  }
-}
-
-
-
-
 
 void checkButtons(const char* buttonName, MD_UISwitch::keyResult_t state)
 { 
 
-//  if (state == MD_UISwitch::KEY_NULL)
-//    return;
-    
-  // check if you press the SET button and increase the menu index
-  if(state == MD_UISwitch::KEY_PRESS)
-  {
-   menu=menu+1;
+
+  char btn = 'X';
+  
+  if (state == MD_UISwitch::KEY_PRESS)
+    btn = buttonName[1];
+
+  if (state == MD_UISwitch::KEY_LONGPRESS){
+    if (buttonName[1] == '2'){
+      Serial.println("mp3 start");
+      mp3.playStart();
+      return;
+    }
+    if (buttonName[1] == '0'){
+      printTime();
+      return;
+    }
   }
-  // in which subroutine should we go?
-  if (menu==0)
-    {
-     printTime(); // void DisplayDateTime
-    }
-  if (menu==1)
-    {
-    DisplaySetHour();
-    }
-  if (menu==2)
-    {
-    DisplaySetMinute();
-    }
-  if (menu==3)
-    {
-    DisplaySetYear();
-    }
-  if (menu==4)
-    {
-    DisplaySetMonth();
-    }
-  if (menu==5)
-    {
-    DisplaySetDay();
-    }
-  if (menu==6)
-    {
-    StoreAgg(); 
-    delay(500);
-    menu=0;
-    }
-    delay(100);
+  
+  if (btn != 'X'){
+    Serial.print(buttonName);
+    Serial.println(menu); 
+    if(btn == '0')
+      menu = menu + 1;
+  }
+     
+  switch (menu){
+      case 1:
+        DisplaySetHour(btn);
+        break;
+      case 2:
+        DisplaySetMinute(btn);
+        break;
+      case 3:
+        DisplaySetYear(btn);
+        break;
+      case 4:
+        DisplaySetMonth(btn);
+        break;
+      case 5:
+        DisplaySetDay(btn);
+        break;
+      case 6:
+        StoreAgg(); 
+        delay(500);
+        menu=0;
+        break;
+      default:
+        printTime();
+        break;
+      }
 }
 
-void DisplaySetHour()
+void DisplaySetHour(char buttonName)
 {
 // time setting
   lc.clearDisplay(0);
   DateTime now = rtc.now();
-  if(digitalRead(P2)==HIGH)
+  if(buttonName == '1')
   {
     if(hourupg==23)
     {
@@ -268,7 +180,7 @@ void DisplaySetHour()
       hourupg=hourupg+1;
     }
   }
-   if(digitalRead(P3)==HIGH)
+   if(buttonName == '2')
   {
     if(hourupg==0)
     {
@@ -279,19 +191,16 @@ void DisplaySetHour()
       hourupg=hourupg-1;
     }
   }
-//  lcd.setCursor(0,0);
-//  lcd.print("Set time:");
-//  lcd.setCursor(0,1);
-//  lcd.print(hourupg,DEC);
-  
-  delay(200);
+  printByte(0x20, 4);
+  printNum(hourupg, 3, false);
+//  delay(200);
 }
 
-void DisplaySetMinute()
+void DisplaySetMinute(char buttonName)
 {
 // Setting the minutes
   lc.clearDisplay(0);
-  if(digitalRead(P2)==HIGH)
+  if(buttonName == '1')
   {
     if (minupg==59)
     {
@@ -302,7 +211,7 @@ void DisplaySetMinute()
       minupg=minupg+1;
     }
   }
-   if(digitalRead(P3)==HIGH)
+   if(buttonName == '2')
   {
     if (minupg==0)
     {
@@ -313,37 +222,35 @@ void DisplaySetMinute()
       minupg=minupg-1;
     }
   }
-//  lcd.setCursor(0,0);
-//  lcd.print("Set Minutes:");
-//  lcd.setCursor(0,1);
-//  lcd.print(minupg,DEC);
-  delay(200);
+  printByte(0x20, 5);
+  printByte(0x20, 4);
+  printNum(minupg, 3, false);
+//  delay(200);
 }
   
-void DisplaySetYear()
+void DisplaySetYear(char buttonName)
 {
 // setting the year
   lc.clearDisplay(0);
-  if(digitalRead(P2)==HIGH)
+  if(buttonName == '1')
   {    
     yearupg=yearupg+1;
   }
-   if(digitalRead(P3)==HIGH)
+   if(buttonName == '2')
   {
     yearupg=yearupg-1;
   }
-//  lcd.setCursor(0,0);
-//  lcd.print("Set Year:");
-//  lcd.setCursor(0,1);
-//  lcd.print(yearupg,DEC);
-  delay(200);
+  printByte(0x3B, 5);
+  printByte(0x3B, 4);
+  printNum(yearupg, 3, false);
+//  delay(200);
 }
 
-void DisplaySetMonth()
+void DisplaySetMonth(char buttonName)
 {
 // Setting the month
   lc.clearDisplay(0);
-  if(digitalRead(P2)==HIGH)
+  if(buttonName == '1')
   {
     if (monthupg==12)
     {
@@ -354,7 +261,7 @@ void DisplaySetMonth()
       monthupg=monthupg+1;
     }
   }
-   if(digitalRead(P3)==HIGH)
+   if(buttonName == '2')
   {
     if (monthupg==1)
     {
@@ -365,18 +272,17 @@ void DisplaySetMonth()
       monthupg=monthupg-1;
     }
   }
-//  lcd.setCursor(0,0);
-//  lcd.print("Set Month:");
-//  lcd.setCursor(0,1);
-//  lcd.print(monthupg,DEC);
-  delay(200);
+  printByte(0x0D, 5);
+  printByte(0x0D, 4);
+  printNum(monthupg, 3, false);
+//  delay(200);
 }
 
-void DisplaySetDay()
+void DisplaySetDay(char buttonName)
 {
 // Setting the day
   lc.clearDisplay(0);
-  if(digitalRead(P2)==HIGH)
+  if(buttonName == '1')
   {
     if (dayupg==31)
     {
@@ -387,7 +293,7 @@ void DisplaySetDay()
       dayupg=dayupg+1;
     }
   }
-   if(digitalRead(P3)==HIGH)
+   if(buttonName == '2')
   {
     if (dayupg==1)
     {
@@ -398,28 +304,27 @@ void DisplaySetDay()
       dayupg=dayupg-1;
     }
   }
-//  lcd.setCursor(0,0);
-//  lcd.print("Set Day:");
-//  lcd.setCursor(0,1);
-//  lcd.print(dayupg,DEC);
-  delay(200);
+  printByte(0x3D, 5);
+  printByte(0x3D, 4);
+  printNum(dayupg, 3, false);
+//  delay(200);
 }
 
 void StoreAgg()
 {
 // Variable saving
   lc.clearDisplay(0);
-//  lcd.setCursor(0,0);
-//  lcd.print("SAVING IN");
-//  lcd.setCursor(0,1);
-//  lcd.print("PROGRESS");
+  printChar('d', 5, false);
+  printByte(0x1D, 4);
+  printByte(0x15, 3);
+  printChar('E', 2, false);
   rtc.adjust(DateTime(yearupg,monthupg,dayupg,hourupg,minupg,0));
-  delay(200);
+//  delay(200);
 }
 
 /////////////////////////////////////
 void setup() {
-
+  Serial.begin(9600);
 
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
   {
@@ -427,39 +332,21 @@ void setup() {
     BTN[i]->begin();
   }
   
-  Serial.begin(9600);
   Wire.begin();
   delay(3000); // wait for console opening
 
   if (! rtc.begin()) {
-        Serial.println("Couldn't find RTC");
+    Serial.println("No RTC found");
     while (1);
   }
   
   if (rtc.lostPower()) {
-        Serial.println("RTC lost power, lets set the time!");
     // following line sets the RTC to the date & time this sketch was compiled
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     // This line sets the RTC with an explicit date & time, for example to set
     // January 21, 2014 at 3am you would call:
      rtc.adjust(DateTime(2020, 2, 26, 21, 0, 0));
-  }  
-
-    // RTC global initialisation
-  RTC.control(DS3231_12H, DS3231_OFF);  // 24 hour clock
-  
-  // Alarm 1 - initialise the 1 second alarm for screen updates
-  RTC.setAlarm1Callback(displayUpdate);
-  RTC.setAlarm1Type(DS3231_ALM_SEC);
-  
-  // Alarm 2 - initialise the alarm
-#if INIT_ALM_DEFAULTS
-  setMyAlarm();
-#else 
-  RTC.setAlarm2Type(ALARM_OFF_TYPE);
-#endif
-   
-  almState = AS_IDLE;
+  }
   
   // wake up MAX72XX from power saving mode
   lc.shutdown(0,false);
@@ -474,87 +361,24 @@ void setup() {
         .setCorrection( TypicalLEDStrip );
   FastLED.setMaxPowerInVoltsAndMilliamps( 5, MAX_POWER_MILLIAMPS);
 
-  // initialize global libraries
+//   initialize global libraries
   mp3.begin();
   mp3.setSynchronous(true);
   mp3.playFolderRepeat(PLAY_FOLDER);
-    
-  displayUpdate();
 }
 
 void loop() {
-//  printTime();
-//  delay(delaytime);
-  // screen update through callback every second
-  RTC.checkAlarm1();
-
-  // If the alarm has gone off, overrides any other state
-  if (RTC.checkAlarm2()) 
-    almState = AS_TRIGGERED;
-
-//  switch (almState) // Alm Finite State Machine
-//  {
-//    case AS_IDLE:     // IDLE state - usually in this state 
-//      switch (c)
-//      {
-//        case 'S':     // Select has been pressed, ALM setting mode has been requested
-//          almState = AS_SETTING;
-//          RTC.readAlarm2(); // get the current values into the temp values, even if we do this every screen update
-//          almH = RTC.h;
-//          almM = RTC.m;
-//          printAlarm();
-//          break;
-//        
-//        case 'U':     // Up has been pressed, ALM on/off toggle
-//          almEnabled = !almEnabled;
-//          if (almEnabled) 
-//            RTC.setAlarm2Type(ALARM_ON_TYPE);
-//          else
-//            RTC.setAlarm2Type(ALARM_OFF_TYPE);
-//          printAlarm();
-//          break;
-//      }        
-//      break;
-//      
-//    case AS_SETTING:  // SETTING state - process the keys
-//      switch (c)
-//      {
-//        case 'S':     // Select key - conclude setting mode and write the new alm time
-//          almState = AS_IDLE;
-//          setMyAlarm();       
-//          break;
-//          
-//        case 'L':     // Left key - increment the alm hour
-//          almH = (almH + 1) % 24;
-//          printAlarm();
-//          break;
-//      
-//        case 'R':     // Right Key - increment the alm minute
-//          almM = (almM + 1) % 60;
-//          printAlarm();
-//          break;
-//      }       
-//      break;
-//      
-//    case AS_TRIGGERED:  // TRIGGERED state - do whatever to signal alarm
-//      doBuzzAlert();
-//      almState = AS_IDLE;
-//      break;
-//      
-//    default:
-//      almState = AS_IDLE;
-//  }
-    
   mp3.check();        // run the mp3 receiver
-  readSerialInput();
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
   {
     char name[] = "B ";
 
     name[1] = i + '0';  // turn into a digit
+    
     checkButtons(name, BTN[i]->read());
+
   }
-  
+//  printTime();
   // put your main code here, to run repeatedly:
   EVERY_N_MILLISECONDS( 20) {
     pacifica_loop();
