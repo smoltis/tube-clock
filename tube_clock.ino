@@ -7,8 +7,8 @@
 
 
 //************Pins*****************//
-#define ARDUINO_RX 5    // connect to TX of MP3 Player module
-#define ARDUINO_TX 4    // connect to RX of MP3 Player module
+#define ARDUINO_RX 4    // connect to TX of MP3 Player module
+#define ARDUINO_TX 3    // connect to RX of MP3 Player module
 #define PLAY_FOLDER 1   // tracks are all placed in this folder
 const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET MENU' // Button + // Button -
 bool playerPause = true;  // true if player is currently paused
@@ -118,14 +118,14 @@ void checkButtons(const char* buttonName, MD_UISwitch::keyResult_t state)
   if (state == MD_UISwitch::KEY_PRESS)
     btn = buttonName[1];
 
-  if (state == MD_UISwitch::KEY_LONGPRESS){
-    if (buttonName[1] == '2'){
+  if (state == MD_UISwitch::KEY_PRESS && menu == 0){
+    if (btn == '2'){
       Serial.println("mp3 start");
-      mp3.playStart();
+      if (playerPause) mp3.playPause(); else mp3.playStart();
       return;
     }
-    if (buttonName[1] == '0'){
-      printTime();
+    if (btn == '1'){
+      mp3.playNext();
       return;
     }
   }
