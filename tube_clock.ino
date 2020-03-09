@@ -103,6 +103,8 @@ void printDate(){
 void printTemp(){
   lc.clearDisplay(0);
   int t = rtc.getTemperature();
+  printByte(0x4E, 0); // o
+  printByte(0x63, 1); // C
   printNum(t, 3);
 }
 
@@ -115,12 +117,11 @@ void checkButtons(const char* buttonName, MD_UISwitch::keyResult_t state)
 
   char btn = 'X';
   
-  if (state == MD_UISwitch::KEY_PRESS)
+  if (state == MD_UISwitch::KEY_DOWN)
     btn = buttonName[1];
 
-  if (state == MD_UISwitch::KEY_PRESS && menu == 0){
+  if (state == MD_UISwitch::KEY_DOWN && menu == 0){
     if (btn == '2'){
-      Serial.println("mp3 start");
       if (playerPause) mp3.playPause(); else mp3.playStart();
       return;
     }
@@ -131,8 +132,6 @@ void checkButtons(const char* buttonName, MD_UISwitch::keyResult_t state)
   }
   
   if (btn != 'X'){
-    Serial.print(buttonName);
-    Serial.println(menu); 
     if(btn == '0')
       menu = menu + 1;
   }
@@ -168,7 +167,7 @@ void DisplaySetHour(char buttonName)
 {
 // time setting
   lc.clearDisplay(0);
-  DateTime now = rtc.now();
+//  DateTime now = rtc.now();
   if(buttonName == '1')
   {
     if(hourupg==23)
@@ -191,9 +190,10 @@ void DisplaySetHour(char buttonName)
       hourupg=hourupg-1;
     }
   }
-  printByte(0x20, 4);
+  
   printNum(hourupg, 3, false);
-//  delay(200);
+  printByte(0x20, 4); // '
+
 }
 
 void DisplaySetMinute(char buttonName)
@@ -222,9 +222,11 @@ void DisplaySetMinute(char buttonName)
       minupg=minupg-1;
     }
   }
-  printByte(0x20, 5);
-  printByte(0x20, 4);
+  
   printNum(minupg, 3, false);
+  printByte(0x20, 4); // '
+  printByte(0x20, 5); // '
+
 //  delay(200);
 }
   
@@ -240,10 +242,10 @@ void DisplaySetYear(char buttonName)
   {
     yearupg=yearupg-1;
   }
-  printByte(0x3B, 5);
-  printByte(0x3B, 4);
   printNum(yearupg, 3, false);
-//  delay(200);
+  printByte(0x3B, 4);
+  printByte(0x3B, 5);
+
 }
 
 void DisplaySetMonth(char buttonName)
@@ -272,9 +274,11 @@ void DisplaySetMonth(char buttonName)
       monthupg=monthupg-1;
     }
   }
-  printByte(0x0D, 5);
-  printByte(0x0D, 4);
   printNum(monthupg, 3, false);
+  printByte(0x15, 4);
+  printByte(0x1D, 5);
+
+
 //  delay(200);
 }
 
@@ -304,22 +308,22 @@ void DisplaySetDay(char buttonName)
       dayupg=dayupg-1;
     }
   }
-  printByte(0x3D, 5);
-  printByte(0x3D, 4);
   printNum(dayupg, 3, false);
-//  delay(200);
+  printByte(0x3D, 4);
+  printByte(0x3D, 5);
+
 }
 
 void StoreAgg()
 {
 // Variable saving
   lc.clearDisplay(0);
-  printChar('d', 5, false);
-  printByte(0x1D, 4);
-  printByte(0x15, 3);
   printChar('E', 2, false);
+  printByte(0x15, 3);
+  printByte(0x1D, 4);
+  printChar('d', 5, false);
   rtc.adjust(DateTime(yearupg,monthupg,dayupg,hourupg,minupg,0));
-//  delay(200);
+  delay(800);
 }
 
 /////////////////////////////////////
@@ -365,10 +369,13 @@ void setup() {
   mp3.begin();
   mp3.setSynchronous(true);
   mp3.playFolderRepeat(PLAY_FOLDER);
+  printTime();
+  printDate();
+  // printTemp();
 }
 
 void loop() {
-  mp3.check();        // run the mp3 receiver
+
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
   {
     char name[] = "B ";
@@ -379,11 +386,23 @@ void loop() {
 
   }
 //  printTime();
-  // put your main code here, to run repeatedly:
-  EVERY_N_MILLISECONDS( 20) {
-    pacifica_loop();
-    FastLED.show();
+  // put your main code here, to run repeatedly if not in menu mode:
+  if (menu == 0){
+    mp3.check();        // run the mp3 receiver  
+    EVERY_N_MILLISECONDS( 20) {
+      pacifica_loop();
+      FastLED.show();
+    }
+    if(secupg % 31 == 0){
+      printDate();
+      delay(2000);
+    }
+    if(secupg % 35 == 0){
+      printTemp();
+      delay(2000);
+    }
   }
+
 }
 
 
