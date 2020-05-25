@@ -10,15 +10,6 @@
 #define ARDUINO_RX 4    // connect to TX of MP3 Player module
 #define ARDUINO_TX 3    // connect to RX of MP3 Player module
 #define PLAY_FOLDER 1   // tracks are all placed in this folder
-const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET MENU' // Button + // Button -
-bool playerPause = true;  // true if player is currently paused
-
-MD_YX5300 mp3(ARDUINO_RX, ARDUINO_TX);
-MD_UISwitch_Digital *BTN[ARRAY_SIZE(SW_PIN)];
-RTC_DS3231 rtc;
-
-#define FASTLED_ALLOW_INTERRUPTS 0
-FASTLED_USING_NAMESPACE
 
 #define DATA_PIN            8
 #define NUM_LEDS            3
@@ -26,8 +17,39 @@ FASTLED_USING_NAMESPACE
 #define LED_TYPE            WS2812B
 #define COLOR_ORDER         GRB
 
+const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET MENU' // Button + // Button -
+const uint8_t DIGITAL_SWITCH_ACTIVE = LOW;
+
+//************FastLED**************//
+#define FASTLED_ALLOW_INTERRUPTS 0
+FASTLED_USING_NAMESPACE
 CRGB leds[NUM_LEDS];
 
+//**********7SegmentDisplay***********//
+/* 
+ * We use pins 7,5 and 6 on the Arduino for the SPI interface
+ * Pin 7 is connected to the DATA IN-pin of the first MAX7221
+ * Pin 5 is connected to the CLK-pin of the first MAX7221
+ * Pin 6 is connected to the LOAD(/CS)-pin of the first MAX7221   
+ * There will only be a single MAX7221 attached to the arduino 
+ */
+LedControl lc=LedControl(7,5,6,1);
+
+//************XY5300MP3**************//
+MD_YX5300 mp3(ARDUINO_RX, ARDUINO_TX);
+
+//************DIGITAL_BTN**************//
+MD_UISwitch_Digital *BTN[ARRAY_SIZE(SW_PIN)]; // SET, UP, DOWN 
+enum buttons {
+  SET,
+  UP,
+  DOWN,
+  NONE
+};
+
+enum buttons btnCtrl = NONE;
+//************RTC_DS3231**************//
+RTC_DS3231 rtc;
 
 //************Variables**************//
 int hourupg;
@@ -36,15 +58,27 @@ int secupg;
 int yearupg;
 int monthupg;
 int dayupg;
-int menu=0;
-
-
-LedControl lc=LedControl(7,5,6,1);
-
-
-
+bool playerPause = true;  // true if MP3 player is currently paused
+bool dotFlag = false;
+//**********Menu FSM*********************//
+enum menuStates {
+  TIME, // display time
+  DATE, // display date
+  OPTIONS,
+  SET_HOUR, // set hour
+  SET_MIN, // set minute
+  SET_DAY, // set minute
+  SET_MONTH, // set month
+  SET_YEAR, // set year
+  // SET_ALARM, // set alarm
+  SAVE // save settings
+};
+ 
+enum menuStates displayState;
+long interval = 1000;
+unsigned long previousMillis = 0;
+unsigned long previousMillisTO = 0;
 //************DisplayFuncs**************//
-
 void printNum(int v, int leftPost, bool dPoint = false){
   int ones;
   int tens;
@@ -79,261 +113,311 @@ void printByte(byte b, int digit){
   lc.setRow(0, digit, b);
 }
 
+void idleMenuTimeout(bool reset=false){
+  unsigned long currentMillisTO = millis();
+  if (reset) {
+    previousMillisTO = currentMillisTO;
+    return;
+  }
+
+  if (displayState > DATE){
+      if ((unsigned long)(currentMillisTO - previousMillisTO >= 30*interval)) {
+        displayState = TIME;
+        previousMillisTO = currentMillisTO;
+      }
+  }
+}
+
+void updateTime(){
+  if (displayState <= DATE) {
+    DateTime now = rtc.now();
+    hourupg=now.hour();
+    minupg=now.minute();
+    secupg=now.second();
+    dayupg=now.day();
+    monthupg=now.month();
+    yearupg=now.year();
+  }
+}
+
 void printTime(){
-  DateTime now = rtc.now();
-  hourupg=now.hour();
-  minupg=now.minute();
-  secupg=now.second();
-  
-  printNum(hourupg,5);
-  printNum(minupg,3);
-  printNum(secupg,1);
+  unsigned long currentMillis = millis();
+  if ((unsigned long)(currentMillis - previousMillis >= interval)) {
+    dotFlag = !dotFlag;
+    previousMillis = currentMillis;
+  }
+
+  printNum(secupg, 1, dotFlag);
+  printNum(minupg, 3, dotFlag);
+  printNum(hourupg, 5, dotFlag);
 }
 
 void printDate(){
-  DateTime now = rtc.now();
-  dayupg=now.day();
-  monthupg=now.month();
-  yearupg=now.year();
-  printNum(dayupg, 5, true);
-  printNum(monthupg, 3, true);
   printNum(yearupg,1);
+  printNum(monthupg, 3, true);
+  printNum(dayupg, 5, true);
 }
 
 void printTemp(){
-  lc.clearDisplay(0);
   int t = rtc.getTemperature();
   printByte(0x4E, 0); // o
   printByte(0x63, 1); // C
   printNum(t, 3);
 }
 
+/////////////////////////////////////MENU/////////////////////////////////////
 
-/////////////////////////////////////
-
-void checkButtons(const char* buttonName, MD_UISwitch::keyResult_t state)
-{ 
-
-
-  char btn = 'X';
-  
-  if (state == MD_UISwitch::KEY_DOWN)
-    btn = buttonName[1];
-
-  if (state == MD_UISwitch::KEY_DOWN && menu == 0){
-    if (btn == '2'){
-      if (playerPause) mp3.playPause(); else mp3.playStart();
-      return;
-    }
-    if (btn == '1'){
-      mp3.playNext();
-      return;
-    }
+void menuControl(){  
+  switch (btnCtrl)
+  {
+    case SET:
+      displayState = (menuStates)((uint8_t)displayState + 1);
+      btnCtrl = NONE;
+//      previousMillis = 0;
+      break;
+    default:
+      break;
   }
-  
-  if (btn != 'X'){
-    if(btn == '0')
-      menu = menu + 1;
-  }
-     
-  switch (menu){
-      case 1:
-        DisplaySetHour(btn);
-        break;
-      case 2:
-        DisplaySetMinute(btn);
-        break;
-      case 3:
-        DisplaySetYear(btn);
-        break;
-      case 4:
-        DisplaySetMonth(btn);
-        break;
-      case 5:
-        DisplaySetDay(btn);
-        break;
-      case 6:
-        StoreAgg(); 
-        delay(500);
-        menu=0;
-        break;
-      default:
-        printTime();
-        break;
-      }
 }
 
-void DisplaySetHour(char buttonName)
+void DisplaySetHour()
 {
-// time setting
-  lc.clearDisplay(0);
-//  DateTime now = rtc.now();
-  if(buttonName == '1')
+  // Setting the hours
+  switch (btnCtrl)
   {
-    if(hourupg==23)
-    {
-      hourupg=0;
-    }
-    else
-    {
-      hourupg=hourupg+1;
-    }
+  case UP:
+    hourupg = (hourupg == 23 ? 0 : hourupg+1);
+    break;
+  case DOWN:
+    hourupg = (hourupg == 0 ? 23 : hourupg-1);
+    break;
+  default:
+    break;
   }
-   if(buttonName == '2')
-  {
-    if(hourupg==0)
-    {
-      hourupg=23;
-    }
-    else
-    {
-      hourupg=hourupg-1;
-    }
-  }
-  
-  printNum(hourupg, 3, false);
-  printByte(0x20, 4); // '
-
+  printByte(0,0);
+  printByte(0,1);
+  printNum(hourupg, 3);
+  printChar('h', 4, true);
+  printChar('h', 5); // i.e. hh. 12
+  btnCtrl = NONE;
+  idleMenuTimeout();
 }
 
-void DisplaySetMinute(char buttonName)
+void DisplaySetMinute()
 {
-// Setting the minutes
-  lc.clearDisplay(0);
-  if(buttonName == '1')
+  // Setting the minutes
+  switch (btnCtrl)
   {
-    if (minupg==59)
-    {
-      minupg=0;
-    }
-    else
-    {
-      minupg=minupg+1;
-    }
+  case UP:
+    minupg = (minupg == 59 ? 0 : minupg+1);
+    break;
+  case DOWN:
+    minupg = (minupg == 0 ? 59 : minupg-1);
+    break;
+  default:
+    break;
   }
-   if(buttonName == '2')
-  {
-    if (minupg==0)
-    {
-      minupg=59;
-    }
-    else
-    {
-      minupg=minupg-1;
-    }
-  }
-  
-  printNum(minupg, 3, false);
-  printByte(0x20, 4); // '
-  printByte(0x20, 5); // '
-
-//  delay(200);
+  printNum(minupg, 3);
+  printByte(0x20, 4); //i.e. '. 45
+  printByte(0x20, 5); 
+  btnCtrl = NONE;
+  idleMenuTimeout();
 }
   
-void DisplaySetYear(char buttonName)
+void DisplaySetYear()
 {
 // setting the year
-  lc.clearDisplay(0);
-  if(buttonName == '1')
-  {    
-    yearupg=yearupg+1;
-  }
-   if(buttonName == '2')
+  switch (btnCtrl)
   {
-    yearupg=yearupg-1;
+  case UP:
+    minupg = (yearupg == 99 ? 0 : yearupg+1);
+    break;
+  case DOWN:
+    yearupg = (yearupg == 0 ? 0 : yearupg-1);
+    break;
+  default:
+    break;
   }
-  printNum(yearupg, 3, false);
-  printByte(0x3B, 4);
+  printNum(yearupg, 3); // i.e. YY. 20
+  printByte(0x3B, 4); 
   printByte(0x3B, 5);
-
+  btnCtrl = NONE;
+  idleMenuTimeout();
 }
 
-void DisplaySetMonth(char buttonName)
+void DisplaySetMonth()
 {
 // Setting the month
-  lc.clearDisplay(0);
-  if(buttonName == '1')
+  switch (btnCtrl)
   {
-    if (monthupg==12)
-    {
-      monthupg=1;
-    }
-    else
-    {
-      monthupg=monthupg+1;
-    }
+  case UP:
+    monthupg = (monthupg == 12 ? 1 : monthupg+1);
+    break;
+  case DOWN:
+    monthupg = (monthupg == 1 ? 12 : monthupg-1);
+    break;
+  default:
+    break;
   }
-   if(buttonName == '2')
-  {
-    if (monthupg==1)
-    {
-      monthupg=12;
-    }
-    else
-    {
-      monthupg=monthupg-1;
-    }
-  }
-  printNum(monthupg, 3, false);
+  printNum(monthupg, 3);
   printByte(0x15, 4);
   printByte(0x1D, 5);
-
-
-//  delay(200);
+  btnCtrl = NONE;
+  idleMenuTimeout();
 }
 
-void DisplaySetDay(char buttonName)
+void DisplaySetDay()
 {
 // Setting the day
-  lc.clearDisplay(0);
-  if(buttonName == '1')
+  switch (btnCtrl)
   {
-    if (dayupg==31)
-    {
-      dayupg=1;
-    }
-    else
-    {
-      dayupg=dayupg+1;
-    }
-  }
-   if(buttonName == '2')
-  {
-    if (dayupg==1)
-    {
-      dayupg=31;
-    }
-    else
-    {
-      dayupg=dayupg-1;
-    }
+  case UP:
+    dayupg = (monthupg == 31 ? 1 : dayupg+1);
+    break;
+  case DOWN:
+    dayupg = (dayupg == 1 ? 31 : dayupg-1);
+    break;
+  default:
+    break;
   }
   printNum(dayupg, 3, false);
   printByte(0x3D, 4);
   printByte(0x3D, 5);
-
+  btnCtrl = NONE;
+  idleMenuTimeout();
 }
 
-void StoreAgg()
+void DisplayOptions()
+{
+// Setting the day
+  switch (btnCtrl)
+  {
+  case UP:
+  case DOWN:
+    displayState = (menuStates)((uint8_t)displayState + 1);
+    break;
+  default:
+    break;
+  }
+  printByte(0x15,0); // n
+  printChar('0',1);
+  printByte(0x06,2); // I
+  printByte(0x0F,3); // t
+  printChar('P',4);
+  printChar('0',5);
+  btnCtrl = NONE;
+  idleMenuTimeout();
+}
+
+void saveSettings()
 {
 // Variable saving
-  lc.clearDisplay(0);
   printChar('E', 2, false);
-  printByte(0x15, 3);
-  printByte(0x1D, 4);
+  printByte(0x15, 3); //n
+  printByte(0x1D, 4); // o
   printChar('d', 5, false);
   rtc.adjust(DateTime(yearupg,monthupg,dayupg,hourupg,minupg,0));
-  delay(800);
+  idleMenuTimeout(true);
+  delay(1000);
+  displayState=TIME;
 }
 
-/////////////////////////////////////
+/////////////////////////////////////PEREFERIALS/////////////////////////////////////
+void readAllBtn(){
+  for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
+  {
+    MD_UISwitch::keyResult_t state = BTN[i]->read();
+    switch (state)
+    {
+    case MD_UISwitch::KEY_NULL:
+      break;
+    case MD_UISwitch::KEY_PRESS:
+    case MD_UISwitch::KEY_RPTPRESS:
+      btnCtrl = (buttons)i;
+      idleMenuTimeout(true);
+      break;
+    default:
+      break;
+    }
+  }
+}
+
+void updateDisplay(){
+
+  switch (displayState)
+  {
+  case TIME:
+  case DATE:
+    if (secupg > 30 && secupg < 40) {
+      printDate();
+    }
+    else {
+      printTime();
+    } 
+    break;
+  case OPTIONS:
+    DisplayOptions();
+    break;
+  case SET_HOUR:
+    DisplaySetHour();
+    break;
+  case SET_MIN:
+    DisplaySetMinute();
+    break;
+  case SET_YEAR:
+    DisplaySetYear();
+    break;
+  case SET_MONTH:
+    DisplaySetMonth();
+    break;
+  case SET_DAY:
+    DisplaySetDay();
+    break;
+  case SAVE:
+    saveSettings();
+    break;
+  default:
+    displayState=TIME;
+    break;
+  }
+
+}
+
+void updateOther(){
+  mp3.check();        // run the mp3 receiver
+  EVERY_N_MILLISECONDS( 20) {
+    pacifica_loop();
+    FastLED.show();
+  }
+}
+
+void playerControl()
+{ 
+  if (displayState == TIME || displayState == DATE){
+    switch (btnCtrl)
+    {
+    case UP:
+      mp3.playNext();
+      break;
+    case DOWN:
+      if (playerPause) mp3.playPause(); else mp3.playStart();
+      break;
+    default:
+      break;
+    }
+    btnCtrl = NONE;
+  }
+}
+
+/////////////////////////////////////SETUP/////////////////////////////////////
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
   {
-    BTN[i] = new MD_UISwitch_Digital(SW_PIN[i], LOW);
+    BTN[i] = new MD_UISwitch_Digital(SW_PIN[i], DIGITAL_SWITCH_ACTIVE);
     BTN[i]->begin();
+    BTN[i]->enableRepeatResult(true);
   }
   
   Wire.begin();
@@ -349,12 +433,12 @@ void setup() {
     rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     // This line sets the RTC with an explicit date & time, for example to set
     // January 21, 2014 at 3am you would call:
-     rtc.adjust(DateTime(2020, 2, 26, 21, 0, 0));
+    // rtc.adjust(DateTime(2020, 2, 26, 21, 0, 0));
   }
   
   // wake up MAX72XX from power saving mode
   lc.shutdown(0,false);
-  /* Set the brightness to a medium values */
+  /* Set the brightness to a brightest value 15, darkest is 0 */
   lc.setIntensity(0,15);
   /* and clear the display */
   lc.clearDisplay(0);
@@ -369,40 +453,20 @@ void setup() {
   mp3.begin();
   mp3.setSynchronous(true);
   mp3.playFolderRepeat(PLAY_FOLDER);
+  btnCtrl = NONE;
+  displayState = TIME;
   printTime();
   printDate();
-  // printTemp();
 }
 
+/////////////////////////////////////LOOP/////////////////////////////////////
 void loop() {
-
-  for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
-  {
-    char name[] = "B ";
-
-    name[1] = i + '0';  // turn into a digit
-    
-    checkButtons(name, BTN[i]->read());
-
-  }
-//  printTime();
-  // put your main code here, to run repeatedly if not in menu mode:
-  if (menu == 0){
-    mp3.check();        // run the mp3 receiver  
-    EVERY_N_MILLISECONDS( 20) {
-      pacifica_loop();
-      FastLED.show();
-    }
-    if(secupg % 31 == 0){
-      printDate();
-      delay(2000);
-    }
-    if(secupg % 35 == 0){
-      printTemp();
-      delay(2000);
-    }
-  }
-
+  updateTime();
+  readAllBtn();
+  menuControl();
+  playerControl();
+  updateDisplay();
+  updateOther();
 }
 
 
