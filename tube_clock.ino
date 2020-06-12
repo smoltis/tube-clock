@@ -5,6 +5,11 @@
 #include <MD_YX5300.h>
 #include <FastLED.h>
 
+// TODO: Change Minute by digit, i.e. 23 will allow to change 2 first from 0 to 5 and 3 next from 0 to 9
+// TODO: Change backlight effects by a button press
+// TODO: Add Alarms with MP3 sounds
+// TODO: Add "Speak Time" function
+// TODO: Add digit change effects i.e. running numbers or folding/fading in and out, add random glitch effect
 
 //************Pins*****************//
 #define ARDUINO_RX 4    // connect to TX of MP3 Player module
@@ -140,13 +145,15 @@ void updateTime(){
   }
 }
 
-void printTime(){
+void tickTimer(){
   unsigned long currentMillis = millis();
   if ((unsigned long)(currentMillis - previousMillis >= interval)) {
     dotFlag = !dotFlag;
     previousMillis = currentMillis;
   }
+}
 
+void printTime(){
   printNum(secupg, 1, dotFlag);
   printNum(minupg, 3, dotFlag);
   printNum(hourupg, 5, dotFlag);
@@ -164,7 +171,38 @@ void printTemp(){
   printByte(0x63, 1); // C
   printNum(t, 3);
 }
+////////////////////////////////////////LED//////////////////////////////////////////
+void setLedsAllGreen(){
+  for( uint16_t i = 0; i < NUM_LEDS; i++) {
+    leds[i] = CRGB::Green;
+  }
+  FastLED.show();
+}
 
+void setLedsAllRed(){
+  for( uint16_t i = 0; i < NUM_LEDS; i++) {
+    leds[i] = CRGB::Red;
+  }
+  FastLED.show();
+}
+
+void setLedsAllBlack(){
+  for( uint16_t i = 0; i < NUM_LEDS; i++) {
+    leds[i] = CRGB::Black;
+  }
+  FastLED.show();
+}
+
+void blinkLed(uint16_t num=0){
+  for( uint16_t i = 0; i < NUM_LEDS; i++) {
+    if (i==num && dotFlag){
+      leds[i] = CRGB::OrangeRed;
+      continue;
+      }
+    leds[i] = CRGB::Black;
+  }
+  FastLED.show();
+}
 /////////////////////////////////////MENU/////////////////////////////////////
 
 void menuControl(){  
@@ -194,11 +232,8 @@ void DisplaySetHour()
   default:
     break;
   }
-  printByte(0,0);
-  printByte(0,1);
-  printNum(hourupg, 3);
-  printChar('h', 4, true);
-  printChar('h', 5); // i.e. hh. 12
+  printTime();
+  blinkLed(0);
   btnCtrl = NONE;
   idleMenuTimeout();
 }
@@ -217,10 +252,9 @@ void DisplaySetMinute()
   default:
     break;
   }
-  printNum(minupg, 3);
-  printByte(0x20, 4); //i.e. '. 45
-  printByte(0x20, 5); 
   btnCtrl = NONE;
+  printTime();
+  blinkLed(1);
   idleMenuTimeout();
 }
   
@@ -230,18 +264,17 @@ void DisplaySetYear()
   switch (btnCtrl)
   {
   case UP:
-    minupg = (yearupg == 99 ? 0 : yearupg+1);
+    yearupg = (yearupg == 99 ? 0 : yearupg+1);
     break;
   case DOWN:
-    yearupg = (yearupg == 0 ? 0 : yearupg-1);
+    yearupg = (yearupg == 0 ? 99 : yearupg-1);
     break;
   default:
     break;
   }
-  printNum(yearupg, 3); // i.e. YY. 20
-  printByte(0x3B, 4); 
-  printByte(0x3B, 5);
   btnCtrl = NONE;
+  printDate();
+  blinkLed(2);
   idleMenuTimeout();
 }
 
@@ -259,10 +292,9 @@ void DisplaySetMonth()
   default:
     break;
   }
-  printNum(monthupg, 3);
-  printByte(0x15, 4);
-  printByte(0x1D, 5);
   btnCtrl = NONE;
+  printDate();
+  blinkLed(1);
   idleMenuTimeout();
 }
 
@@ -280,15 +312,15 @@ void DisplaySetDay()
   default:
     break;
   }
-  printNum(dayupg, 3, false);
-  printByte(0x3D, 4);
-  printByte(0x3D, 5);
   btnCtrl = NONE;
+  printDate();
+  blinkLed(0);
   idleMenuTimeout();
 }
 
 void DisplayOptions()
 {
+  setLedsAllRed();
 // Setting the day
   switch (btnCtrl)
   {
@@ -299,23 +331,27 @@ void DisplayOptions()
   default:
     break;
   }
-  printByte(0x15,0); // n
-  printChar('0',1);
-  printByte(0x06,2); // I
-  printByte(0x0F,3); // t
-  printChar('P',4);
-  printChar('0',5);
+  printByte(0x15,0);      // n
+  printByte(0x1D, 1);     // o
+  printByte(B00010000,2); // i
+  printByte(0x0F,3);      // t
+  printChar('P',4);       // P
+  printByte(0x1D, 5);     // o
+  
   btnCtrl = NONE;
   idleMenuTimeout();
 }
 
 void saveSettings()
 {
+  setLedsAllGreen();
 // Variable saving
-  printChar('E', 2, false);
+  printByte(0, 0); // 
+  printByte(0, 1); // 
+  printChar('E', 2, false); //E
   printByte(0x15, 3); //n
   printByte(0x1D, 4); // o
-  printChar('d', 5, false);
+  printChar('d', 5, false); //d
   rtc.adjust(DateTime(yearupg,monthupg,dayupg,hourupg,minupg,0));
   idleMenuTimeout(true);
   delay(1000);
@@ -384,10 +420,12 @@ void updateDisplay(){
 }
 
 void updateOther(){
-  mp3.check();        // run the mp3 receiver
-  EVERY_N_MILLISECONDS( 20) {
-    pacifica_loop();
-    FastLED.show();
+  if (displayState == TIME || displayState == DATE){
+    mp3.check();        // run the mp3 receiver
+    EVERY_N_MILLISECONDS( 20) {
+      pacifica_loop();
+      FastLED.show();
+    }
   }
 }
 
@@ -461,6 +499,7 @@ void setup() {
 
 /////////////////////////////////////LOOP/////////////////////////////////////
 void loop() {
+  tickTimer();
   updateTime();
   readAllBtn();
   menuControl();
