@@ -1,9 +1,10 @@
 #include <LedControl.h>
-#include <RTClib.h>
+#include <RTClib.h> // concider uRTClib library https://protosupplies.com/product/ds3231-rtc-with-eeprom-module/#:~:text=The%20DS3231%20RTC%20chip%20is,the%20EEPROM%20is%20at%200x57.
 #include <Wire.h>
 #include <MD_UISwitch.h>
 #include <MD_YX5300.h>
 #include <FastLED.h>
+#include <uEEPROMLib.h>
 
 // TODO: Change Minute by digit, i.e. 23 will allow to change 2 first from 0 to 5 and 3 next from 0 to 9
 // TODO: Change backlight effects by a button press
@@ -11,19 +12,36 @@
 // TODO: Add "Speak Time" function
 // TODO: Add digit change effects i.e. running numbers or folding/fading in and out, add random glitch effect
 
-//************Pins*****************//
-#define ARDUINO_RX 4    // connect to TX of MP3 Player module
-#define ARDUINO_TX 3    // connect to RX of MP3 Player module
-#define PLAY_FOLDER 1   // tracks are all placed in this folder
+// Enable debug output - set to non-zero value to enable.
+#define DEBUG 0
 
-#define DATA_PIN            8
-#define NUM_LEDS            3
-#define MAX_POWER_MILLIAMPS 100
+#ifdef DEBUG
+#define PRINT(s,v)    { Serial.print(F(s)); Serial.print(v); }
+#define PRINTX(s,v)   { Serial.print(F(s)); Serial.print(v, HEX); }
+#define PRINTS(s)     { Serial.print(F(s)); }
+#else
+#define PRINT(s,v)
+#define PRINTX(s,v)
+#define PRINTS(s)
+#endif
+
+//************Pins*****************//
+const uint8_t ARDUINO_RX=4;    // connect to TX of MP3 Player module
+const uint8_t ARDUINO_TX=3;    // connect to RX of MP3 Player module
+const uint8_t PLAY_FOLDER=1;   // tracks are all placed in this folder
+
+const uint8_t DATA_PIN=8;
+const uint8_t NUM_LEDS=3;
+const uint8_t MAX_POWER_MILLIAMPS=100;
 #define LED_TYPE            WS2812B
 #define COLOR_ORDER         GRB
+#define EEPROM_ADDR         0x57
 
-const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET MENU' // Button + // Button -
+const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET // Button + // Button -
 const uint8_t DIGITAL_SWITCH_ACTIVE = LOW;
+
+//************EEPROM**************//
+uEEPROMLib eeprom(EEPROM_ADDR);
 
 //************FastLED**************//
 #define FASTLED_ALLOW_INTERRUPTS 0
@@ -42,7 +60,19 @@ LedControl lc=LedControl(7,5,6,1);
 
 //************XY5300MP3**************//
 MD_YX5300 mp3(ARDUINO_RX, ARDUINO_TX);
+enum playStatus_t { S_PAUSED, S_PLAYING, S_STOPPED };
+enum playMode_t { M_SEQ, M_SHUFFLE, M_LOOP, M_EJECTED };
+struct    // contains all the running status information
+{
+  bool initializing;      // loading data from the device
+  bool waiting;           // waiting initialization response
 
+  playMode_t playMode;    // playing mode 
+  playStatus_t playStatus;// playing status
+  uint16_t numTracks;     // number of tracks in this folder
+  int16_t curTrack;       // current track being played
+  uint16_t volume;        // the current audio volume
+} S;
 //************DIGITAL_BTN**************//
 MD_UISwitch_Digital *BTN[ARRAY_SIZE(SW_PIN)]; // SET, UP, DOWN 
 enum buttons {
@@ -63,8 +93,14 @@ int secupg;
 int yearupg;
 int monthupg;
 int dayupg;
-bool playerPause = true;  // true if MP3 player is currently paused
+int alarm1_h;
+int alarm1_m;
+
 bool dotFlag = false;
+bool hourlySpeak = true;
+bool isAlarm1_active = false;
+bool isAlarm1_enabled = false;
+
 //**********Menu FSM*********************//
 enum menuStates {
   TIME, // display time
@@ -75,7 +111,9 @@ enum menuStates {
   SET_DAY, // set minute
   SET_MONTH, // set month
   SET_YEAR, // set year
-  // SET_ALARM, // set alarm
+  SET_ALARM1, 
+  SET_ALARM1_H, // set alarm1 hour
+  SET_ALARM1_M, // set alarm1 minute
   SAVE // save settings
 };
  
@@ -153,6 +191,13 @@ void tickTimer(){
   }
 }
 
+void playSound(){
+  if (hourlySpeak and minupg == 0 and secupg == 0 and hourupg >= 7 and hourupg < 21){
+    mp3.playTrack(1); // add one becaue it's zero based
+    // TODO: get number of tracks in th ecurrent folder and pick the number next to currtrack
+  }
+}
+
 void printTime(){
   printNum(secupg, 1, dotFlag);
   printNum(minupg, 3, dotFlag);
@@ -171,6 +216,14 @@ void printTemp(){
   printByte(0x63, 1); // C
   printNum(t, 3);
 }
+
+void printAlarm1(){
+  printChar('A', 5);
+  printChar('1', 4, isAlarm1_enabled);
+  printNum(alarm1_h, 3, dotFlag);
+  printNum(alarm1_m, );
+}
+
 ////////////////////////////////////////LED//////////////////////////////////////////
 void setLedsAllGreen(){
   for( uint16_t i = 0; i < NUM_LEDS; i++) {
@@ -193,10 +246,10 @@ void setLedsAllBlack(){
   FastLED.show();
 }
 
-void blinkLed(uint16_t num=0){
+void blinkLed(uint16_t num=0, CRGB color=CRGB::OrangeRed){
   for( uint16_t i = 0; i < NUM_LEDS; i++) {
     if (i==num && dotFlag){
-      leds[i] = CRGB::OrangeRed;
+      leds[i] = color;
       continue;
       }
     leds[i] = CRGB::Black;
@@ -344,6 +397,7 @@ void DisplayOptions()
 
 void saveSettings()
 {
+  idleMenuTimeout(true);
   setLedsAllGreen();
 // Variable saving
   printByte(0, 0); // 
@@ -353,12 +407,78 @@ void saveSettings()
   printByte(0x1D, 4); // o
   printChar('d', 5, false); //d
   rtc.adjust(DateTime(yearupg,monthupg,dayupg,hourupg,minupg,0));
-  idleMenuTimeout(true);
+  saveAlarm1NVRam();
   delay(1000);
   displayState=TIME;
 }
 
+void displaySetAlarm1()
+{
+// Enabling the Alarm1
+  switch (btnCtrl)
+  {
+  case UP:
+    isAlarm1_enabled = true;
+    break;
+  case DOWN:
+    isAlarm1_enabled = false;
+    break;
+  default:
+    break;
+  }
+  btnCtrl = NONE;
+  printAlarm1();
+  if(isAlarm1_enabled)
+    blinkLed(0, CRGB::Green);
+  else
+    blinkLed(0, CRGB::Red);
+  idleMenuTimeout();  
+}
+
+void displaySetAlarm1_H()
+{
+// Setting the Alarm1 hours
+  switch (btnCtrl)
+  {
+  case UP:
+    alarm1_h = (alarm1_h == 23 ? 0 : alarm1_h+1);
+    break;
+  case DOWN:
+    alarm1_h = (alarm1_h == 0 ? 23 : alarm1_h-1);
+    break;
+  default:
+    break;
+  }
+  btnCtrl = NONE;
+  printAlarm1();
+  blinkLed(1, CRGB::Red);
+  idleMenuTimeout();  
+}
+
+void displaySetAlarm1_M()
+{
+// Setting the Alarm1 minutes
+  switch (btnCtrl)
+  {
+  case UP:
+    alarm1_m = (alarm1_m == 59 ? 0 : alarm1_m+1);
+    break;
+  case DOWN:
+    alarm1_m = (alarm1_m == 0 ? 59 : alarm1_m-1);
+    break;
+  default:
+    break;
+  }
+  btnCtrl = NONE;
+  printAlarm1();
+  blinkLed(2, CRGB::Red);
+  idleMenuTimeout();
+}
+
 /////////////////////////////////////PEREFERIALS/////////////////////////////////////
+
+
+////////////////////////////////////BUTTONS//////////////////////////////////////////
 void readAllBtn(){
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
   {
@@ -371,6 +491,7 @@ void readAllBtn(){
     case MD_UISwitch::KEY_RPTPRESS:
       btnCtrl = (buttons)i;
       idleMenuTimeout(true);
+      stopAlarm1(); // exit alarm mode on any button press
       break;
     default:
       break;
@@ -409,6 +530,15 @@ void updateDisplay(){
   case SET_DAY:
     DisplaySetDay();
     break;
+  case SET_ALARM1:
+    displaySetAlarm1();
+    break;
+  case SET_ALARM1_H:
+    displaySetAlarm1_H();
+    break;
+  case SET_ALARM1_M:
+    displaySetAlarm1_M();
+    break;
   case SAVE:
     saveSettings();
     break;
@@ -419,31 +549,278 @@ void updateDisplay(){
 
 }
 
-void updateOther(){
+void updateLeds(){
   if (displayState == TIME || displayState == DATE){
-    mp3.check();        // run the mp3 receiver
+    if (upgmin == alarm1_m and upghour == alarm1_h and isAlarm1_enabled){
+      if (dotFlag){
+        setLedsAllRed();
+      }
+      else {
+        setLedsAllBlack();
+      }
+      return;
+    }
     EVERY_N_MILLISECONDS( 20) {
       pacifica_loop();
       FastLED.show();
     }
   }
 }
+/////////////////////////////////MP3/////////////////////////////////////////
+bool initData(bool reset = false)
+// Initialize data from the MP3 device. 
+// This needs to be metered out as the data requests will generate 
+// unsolicited messages to be handled in the callback - message 
+// sequence must be maintained with the synchronous message processing
+// stream.
+// Returns true if the initialization must keep going, false when completed.
+{
+  static uint8_t state = 0;
+  bool b = true;
+
+  if (reset)    // just rest the sequencing
+  {
+    state = 0;
+  }
+  else
+  {
+    switch (state)
+    {
+    case 0:   // set a default state in the device and then ask for first data
+      mp3.playSpecific(PLAY_FOLDER, 1);
+      mp3.playPause();
+      S.playMode = M_SEQ;
+      S.playStatus = S_PAUSED;
+
+      if (S.volume == 0)
+        //S.volume = (mp3.volumeMax() / 3) * 2;   // 2/3 of volume to start with
+        S.volume = mp3.volumeMax(); // set max volume
+      mp3.volume(S.volume);
+
+      // load number of files in the folder - needs wait for response
+      mp3.queryFolderFiles(PLAY_FOLDER);
+      S.waiting = true;
+      state++;
+      break;
+
+    case 1: // now load the track playing - needs wait for response
+      mp3.queryFile();
+      S.waiting = true;
+      state++;
+      break;
+
+    default:
+      // end of sequence handler - reset to start
+      state = 0;
+      b = false;
+      break;
+    }
+  }
+
+  return(b);
+}
+
+void selectNextSong(int direction = 0)
+// Pick the next song to play based on playing mode set.
+// If direction  < 0 then select a 'previous' song, 
+// otherwise the 'next' song is selected.
+{
+  switch (S.playMode)
+  {
+  case M_SHUFFLE:   // random selection
+    {
+      uint16_t x = random(S.numTracks) + 1;
+      mp3.playTrack(x);
+      PRINT("\nPlay SHUFFLE ", x);
+    }
+    break;
+
+  case M_LOOP:      // replay the same track
+      mp3.playTrack(S.curTrack);
+      PRINTS("\nPlay LOOP");
+      break;
+
+  case M_SEQ:       // play sequential - next/previous
+      if (direction < 0) 
+        mp3.playPrev(); 
+      else  
+        mp3.playNext();
+      PRINTS("\nPlay SEQ");
+      break;
+  }
+  mp3.queryFile();    // force index the update in callback
+}
+
+void cbResponse(const MD_YX5300::cbData *status)
+// Callback function used to process device unsolicited messages
+// or responses to data requests
+{
+  PRINTS("\n");
+  switch (status->code)
+  {
+  case MD_YX5300::STS_FILE_END:   // track has ended
+    PRINTS("STS_FILE_END");
+    selectNextSong();
+    break;
+
+  case MD_YX5300::STS_TF_INSERT:  // card has been inserted
+    PRINTS("STS_TF_INSERT"); 
+    S.initializing = initData(true);
+    break;
+
+  case MD_YX5300::STS_TF_REMOVE:  // card has been removed
+    PRINTS("STS_TF_REMOVE"); 
+    S.playMode = M_EJECTED;
+    S.playStatus = S_STOPPED;
+    break;
+
+  case MD_YX5300::STS_PLAYING:   // current track index 
+    PRINTS("STS_PLAYING");    
+    S.curTrack = status->data;
+    break;
+
+  case MD_YX5300::STS_FLDR_FILES: // number of files in the folder
+    PRINTS("STS_FLDR_FILES"); 
+    S.numTracks = status->data;
+    break;
+
+  // unhandled cases - used for debug only
+  case MD_YX5300::STS_VOLUME:     PRINTS("STS_VOLUME");     break;
+  case MD_YX5300::STS_TOT_FILES:  PRINTS("STS_TOT_FILES");  break;
+  case MD_YX5300::STS_ERR_FILE:   PRINTS("STS_ERR_FILE");   break;
+  case MD_YX5300::STS_ACK_OK:     PRINTS("STS_ACK_OK");     break;
+  case MD_YX5300::STS_INIT:       PRINTS("STS_INIT");       break;
+  case MD_YX5300::STS_STATUS:     PRINTS("STS_STATUS");     break;
+  case MD_YX5300::STS_EQUALIZER:  PRINTS("STS_EQUALIZER");  break;
+  case MD_YX5300::STS_TOT_FLDR:   PRINTS("STS_TOT_FLDR");   break;
+  default: PRINTX("STS_??? 0x", status->code); break;
+  }
+
+  PRINTX(", 0x", status->data);
+  S.waiting = false;
+}
+
+void processPlayMode(void)
+// Read the mode selection switch and act if it has been pressed
+//  - Start/pause track playback with simple press
+//  - Random/repeat/single playback cycle with long press
+{
+  switch (btnCtrl)
+  {
+  case UP:
+    if(mp3.playNext()) S.playStatus = S_PLAYING;
+    break;
+  case DOWN:  
+    switch (S.playStatus)
+      {
+      case S_PLAYING:
+        if (mp3.playPause()) S.playStatus = S_PAUSED;
+      break;
+
+      case S_PAUSED:
+        if (mp3.playStart()) S.playStatus = S_PLAYING;
+      break;
+      }
+    break;
+  default:
+    break;
+  }
+  playSound();
+  btnCtrl = NONE;
+ 
+// switch (k)
+//  {
+//
+//  case MD_UISwitch::KEY_LONGPRESS: // random/loop/single cycle
+//    switch (S.playMode)
+//    {
+//    case M_SEQ:     S.playMode = M_LOOP;    PRINTS("\nMode LOOP");    break;
+//    case M_LOOP:    S.playMode = M_SHUFFLE; PRINTS("\nMode SHUFFLE"); break;
+//    case M_SHUFFLE: S.playMode = M_SEQ;     PRINTS("\nMode SINGLE");  break;
+//    }
+//    break;
+//  }
+}
 
 void playerControl()
 { 
   if (displayState == TIME || displayState == DATE){
-    switch (btnCtrl)
-    {
-    case UP:
-      mp3.playNext();
-      break;
-    case DOWN:
-      if (playerPause) mp3.playPause(); else mp3.playStart();
-      break;
-    default:
-      break;
+    mp3.check();        // run the mp3 receiver
+    // Initialization must preserve the unsolicited queue order so it 
+    // stops any normal synchronous calls from happening
+    if (S.initializing && !S.waiting)
+        S.initializing = initData();
+    else {
+        processPlayMode();  // set the current play mode (switch selection)
     }
+  }
+}
+
+void checkAlarm1()
+{
+  if (!isAlarm1_enabled){
+    return;
+  }
+    if (minupg == alarm1_m and hourupg == alarm1_h){
+      if (isAlarm1_active)
+        return;
+      else {
+        isAlarm1_active = true;
+        selectNextSong(); // add one becaue it's zero based
+      }
+      // TODO: get number of tracks in th ecurrent folder and pick the number next to currtrack
+    } 
+    else {
+      stopAlarm1();
+    }  
+}
+
+void stopAlarm1(){
+  if(isAlarm1_active){
+    isAlarm1_active = false;
+    mp3.playPause();
     btnCtrl = NONE;
+  }       
+}
+
+void readAlarm1NVRam(){
+  eeprom.eeprom_read(0, &alarm1_h);
+  
+  if (alarm1_h < 0 or alarm1_h > 23){
+    alarm1_h = 12;
+  }
+
+  eeprom.eeprom_read(1, &alarm1_m);
+
+  if (alarm1_m <0 or alarm1_m > 59){
+    alarm1_m = 0;
+  }
+  uint8_t tmp_b;
+  eeprom.eeprom_read(2, &tmp_b);
+  isAlarm1_enabled = (bool)tmp_b;
+}
+
+void saveAlarm1NVRam(){
+  if (alarm1_h >=0 and alarm1_h <= 23){
+    if (!eeprom.eeprom_write(0, alarm1_h)) {
+      Serial.println("Failed to store Alarm H");
+    } else {
+      Serial.println("Alarm H correctly stored");
+    }
+  }
+  
+  if (alarm1_m >=0 and alarm1_m <= 59){
+    if (!eeprom.eeprom_write(1, alarm1_m)) {
+      Serial.println("Failed to store Alarm M");
+    } else {
+      Serial.println("Alarm M correctly stored");
+    }
+  }
+  
+  if (!eeprom.eeprom_write(2, (uint8_t)isAlarm1_enabled)) {
+    Serial.println("Failed to store Alarm Enabled");
+  } else {
+    Serial.println("Alarm Enabled correctly stored");
   }
 }
 
@@ -473,6 +850,8 @@ void setup() {
     // January 21, 2014 at 3am you would call:
     // rtc.adjust(DateTime(2020, 2, 26, 21, 0, 0));
   }
+
+  readAlarm1NVRam();
   
   // wake up MAX72XX from power saving mode
   lc.shutdown(0,false);
@@ -487,25 +866,29 @@ void setup() {
         .setCorrection( TypicalLEDStrip );
   FastLED.setMaxPowerInVoltsAndMilliamps( 5, MAX_POWER_MILLIAMPS);
 
-//   initialize global libraries
+  // initialize global libraries
   mp3.begin();
   mp3.setSynchronous(true);
-  mp3.playFolderRepeat(PLAY_FOLDER);
+  mp3.setCallback(cbResponse);
+  S.initializing = initData(true);
+  
   btnCtrl = NONE;
   displayState = TIME;
   printTime();
   printDate();
+  
 }
 
 /////////////////////////////////////LOOP/////////////////////////////////////
 void loop() {
   tickTimer();
   updateTime();
+  checkAlarm1();
   readAllBtn();
   menuControl();
   playerControl();
   updateDisplay();
-  updateOther();
+  updateLeds();
 }
 
 
