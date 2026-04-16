@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2020 Stan
+
 #include <LedControl.h>
 #include <RTClib.h> // concider uRTClib library https://protosupplies.com/product/ds3231-rtc-with-eeprom-module/#:~:text=The%20DS3231%20RTC%20chip%20is,the%20EEPROM%20is%20at%200x57.
 #include <Wire.h>
-#include <MD_UISwitch.h>
+#include <AceButton.h>
 #include <MD_YX5300.h>
 #include <FastLED.h>
 #include <uEEPROMLib.h>
@@ -29,6 +32,7 @@
 const uint8_t ARDUINO_RX=4;    // connect to TX of MP3 Player module
 const uint8_t ARDUINO_TX=3;    // connect to RX of MP3 Player module
 const uint8_t PLAY_FOLDER=1;   // tracks are all placed in this folder
+const uint8_t BUZZER_PIN=12;   // passive buzzer (PWM/tone)
 
 const uint8_t DATA_PIN=8;
 const uint8_t NUM_LEDS=3;
@@ -39,6 +43,10 @@ const uint8_t MAX_POWER_MILLIAMPS=100;
 
 const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET // Button + // Button -
 const uint8_t DIGITAL_SWITCH_ACTIVE = LOW;
+const uint8_t BUTTON_DEBOUNCE_MS = 25;
+const uint16_t BUTTON_LONG_PRESS_MS = 600;
+const uint16_t BUTTON_REPEAT_START_MS = 350;
+const uint16_t BUTTON_REPEAT_INTERVAL_MS = 120;
 
 //************EEPROM**************//
 uEEPROMLib eeprom(EEPROM_ADDR);
@@ -74,7 +82,8 @@ struct    // contains all the running status information
   uint16_t volume;        // the current audio volume
 } S;
 //************DIGITAL_BTN**************//
-MD_UISwitch_Digital *BTN[ARRAY_SIZE(SW_PIN)]; // SET, UP, DOWN 
+using namespace ace_button;
+
 enum buttons {
   SET,
   UP,
@@ -83,6 +92,12 @@ enum buttons {
 };
 
 enum buttons btnCtrl = NONE;
+ButtonConfig buttonConfig;
+AceButton BTN[ARRAY_SIZE(SW_PIN)] = {
+  AceButton(SW_PIN[SET], DIGITAL_SWITCH_ACTIVE, SET, &buttonConfig),
+  AceButton(SW_PIN[UP], DIGITAL_SWITCH_ACTIVE, UP, &buttonConfig),
+  AceButton(SW_PIN[DOWN], DIGITAL_SWITCH_ACTIVE, DOWN, &buttonConfig)
+};
 //************RTC_DS3231**************//
 RTC_DS3231 rtc;
 
@@ -100,6 +115,28 @@ bool dotFlag = false;
 bool hourlySpeak = true;
 bool isAlarm1_active = false;
 bool isAlarm1_enabled = false;
+
+const uint16_t ALARM_MELODY_FREQ[] = {
+  523, 659, 784, 1047,
+  784, 659, 587, 740,
+  880, 1175, 880, 740,
+  0, 740, 880, 1047
+};
+const uint16_t ALARM_MELODY_DURATION_MS[] = {
+  180, 180, 180, 280,
+  180, 180, 180, 180,
+  180, 280, 180, 220,
+  120, 180, 180, 320
+};
+
+bool alarmMelodyPlaying = false;
+uint8_t alarmMelodyStep = 0;
+unsigned long alarmMelodyStepStartedAt = 0;
+uint16_t alarmMelodyStepDurationMs = 0;
+
+bool timeEditSessionActive = false;
+unsigned long timeEditSessionMillis = 0;
+uint8_t timeEditStartSecond = 0;
 
 //**********Menu FSM*********************//
 enum menuStates {
@@ -156,6 +193,20 @@ void printByte(byte b, int digit){
   lc.setRow(0, digit, b);
 }
 
+void startTimeEditSession(){
+  if (timeEditSessionActive){
+    return;
+  }
+  DateTime now = rtc.now();
+  timeEditStartSecond = now.second();
+  timeEditSessionMillis = millis();
+  timeEditSessionActive = true;
+}
+
+void endTimeEditSession(){
+  timeEditSessionActive = false;
+}
+
 void idleMenuTimeout(bool reset=false){
   unsigned long currentMillisTO = millis();
   if (reset) {
@@ -166,8 +217,51 @@ void idleMenuTimeout(bool reset=false){
   if (displayState > DATE){
       if ((unsigned long)(currentMillisTO - previousMillisTO >= 30*interval)) {
         displayState = TIME;
+        endTimeEditSession();
         previousMillisTO = currentMillisTO;
       }
+  }
+}
+
+void startAlarmMelody(){
+  alarmMelodyPlaying = true;
+  alarmMelodyStep = 0;
+  alarmMelodyStepStartedAt = 0;
+  alarmMelodyStepDurationMs = 0;
+}
+
+void stopAlarmMelody(){
+  alarmMelodyPlaying = false;
+  noTone(BUZZER_PIN);
+}
+
+void updateAlarmMelody(){
+  if (!alarmMelodyPlaying){
+    return;
+  }
+
+  unsigned long now = millis();
+  if (
+    alarmMelodyStepStartedAt == 0 ||
+    (unsigned long)(now - alarmMelodyStepStartedAt) >= alarmMelodyStepDurationMs
+  ) {
+    uint16_t freq = ALARM_MELODY_FREQ[alarmMelodyStep];
+    uint16_t durationMs = ALARM_MELODY_DURATION_MS[alarmMelodyStep];
+
+    if (freq == 0) {
+      noTone(BUZZER_PIN);
+    } else {
+      uint16_t playMs = (durationMs > 20) ? durationMs - 20 : durationMs;
+      tone(BUZZER_PIN, freq, playMs);
+    }
+
+    alarmMelodyStepDurationMs = durationMs;
+    alarmMelodyStepStartedAt = now;
+    alarmMelodyStep++;
+
+    if (alarmMelodyStep >= ARRAY_SIZE(ALARM_MELODY_FREQ)) {
+      alarmMelodyStep = 0;
+    }
   }
 }
 
@@ -262,7 +356,11 @@ void menuControl(){
   switch (btnCtrl)
   {
     case SET:
+      menuStates prevState = displayState;
       displayState = (menuStates)((uint8_t)displayState + 1);
+      if (prevState == DATE && displayState == OPTIONS){
+        startTimeEditSession();
+      }
       btnCtrl = NONE;
 //      previousMillis = 0;
       break;
@@ -397,19 +495,44 @@ void DisplayOptions()
 
 void saveSettings()
 {
-  idleMenuTimeout(true);
-  setLedsAllGreen();
-// Variable saving
-  printByte(0, 0); // 
-  printByte(0, 1); // 
-  printChar('E', 2, false); //E
-  printByte(0x15, 3); //n
-  printByte(0x1D, 4); // o
-  printChar('d', 5, false); //d
-  rtc.adjust(DateTime(yearupg,monthupg,dayupg,hourupg,minupg,0));
-  saveAlarm1NVRam();
-  delay(1000);
-  displayState=TIME;
+  static bool saveInProgress = false;
+  static unsigned long saveStartedAt = 0;
+
+  if (!saveInProgress)
+  {
+    idleMenuTimeout(true);
+    setLedsAllGreen();
+    // Variable saving
+    printByte(0, 0); // 
+    printByte(0, 1); // 
+    printChar('E', 2, false); //E
+    printByte(0x15, 3); //n
+    printByte(0x1D, 4); // o
+    printChar('d', 5, false); //d
+
+    uint8_t secondForSave = rtc.now().second();
+    unsigned long elapsedSec = 0;
+    if (timeEditSessionActive)
+    {
+      secondForSave = timeEditStartSecond;
+      elapsedSec = (unsigned long)(millis() - timeEditSessionMillis) / 1000UL;
+    }
+
+    DateTime editedTime(yearupg,monthupg,dayupg,hourupg,minupg,secondForSave);
+    rtc.adjust(editedTime + TimeSpan(elapsedSec));
+
+    saveAlarm1NVRam();
+    saveStartedAt = millis();
+    saveInProgress = true;
+    return;
+  }
+
+  if ((unsigned long)(millis() - saveStartedAt) >= 1000)
+  {
+    saveInProgress = false;
+    displayState = TIME;
+    endTimeEditSession();
+  }
 }
 
 void displaySetAlarm1()
@@ -475,27 +598,46 @@ void displaySetAlarm1_M()
   idleMenuTimeout();
 }
 
-/////////////////////////////////////PEREFERIALS/////////////////////////////////////
+void handleButtonEvent(AceButton* button, uint8_t eventType, uint8_t buttonState)
+{
+  (void)buttonState;
+  buttons b = (buttons)button->getId();
 
+  switch (eventType)
+  {
+  case AceButton::kEventPressed:
+    btnCtrl = b;
+    idleMenuTimeout(true);
+    stopAlarm1(); // exit alarm mode on any button press
+    break;
 
-////////////////////////////////////BUTTONS//////////////////////////////////////////
+  case AceButton::kEventRepeatPressed:
+    if (b == UP || b == DOWN)
+    {
+      btnCtrl = b;
+      idleMenuTimeout(true);
+      stopAlarm1();
+    }
+    break;
+
+  case AceButton::kEventLongPressed:
+    if (b == SET)
+    {
+      displayState = SAVE;
+      idleMenuTimeout(true);
+      stopAlarm1();
+    }
+    break;
+
+  default:
+    break;
+  }
+}
+
 void readAllBtn(){
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
   {
-    MD_UISwitch::keyResult_t state = BTN[i]->read();
-    switch (state)
-    {
-    case MD_UISwitch::KEY_NULL:
-      break;
-    case MD_UISwitch::KEY_PRESS:
-    case MD_UISwitch::KEY_RPTPRESS:
-      btnCtrl = (buttons)i;
-      idleMenuTimeout(true);
-      stopAlarm1(); // exit alarm mode on any button press
-      break;
-    default:
-      break;
-    }
+    BTN[i].check();
   }
 }
 
@@ -767,6 +909,7 @@ void checkAlarm1()
       else {
         isAlarm1_active = true;
         selectNextSong(); // add one becaue it's zero based
+        startAlarmMelody();
       }
       // TODO: get number of tracks in th ecurrent folder and pick the number next to currtrack
     } 
@@ -780,7 +923,8 @@ void stopAlarm1(){
     isAlarm1_active = false;
     mp3.playPause();
     btnCtrl = NONE;
-  }       
+  }
+  stopAlarmMelody();
 }
 
 void readAlarm1NVRam(){
@@ -828,12 +972,21 @@ void saveAlarm1NVRam(){
 void setup() {
   Serial.begin(115200);
 
+  buttonConfig.setEventHandler(handleButtonEvent);
+  buttonConfig.setFeature(ButtonConfig::kFeatureLongPress);
+  buttonConfig.setFeature(ButtonConfig::kFeatureRepeatPress);
+  buttonConfig.setFeature(ButtonConfig::kFeatureSuppressAfterLongPress);
+  buttonConfig.setDebounceDelay(BUTTON_DEBOUNCE_MS);
+  buttonConfig.setLongPressDelay(BUTTON_LONG_PRESS_MS);
+  buttonConfig.setRepeatPressDelay(BUTTON_REPEAT_START_MS);
+  buttonConfig.setRepeatPressInterval(BUTTON_REPEAT_INTERVAL_MS);
+
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
   {
-    BTN[i] = new MD_UISwitch_Digital(SW_PIN[i], DIGITAL_SWITCH_ACTIVE);
-    BTN[i]->begin();
-    BTN[i]->enableRepeatResult(true);
+    pinMode(SW_PIN[i], INPUT_PULLUP);
   }
+  pinMode(BUZZER_PIN, OUTPUT);
+  noTone(BUZZER_PIN);
   
   Wire.begin();
   delay(3000); // wait for console opening
@@ -881,10 +1034,11 @@ void setup() {
 
 /////////////////////////////////////LOOP/////////////////////////////////////
 void loop() {
+  readAllBtn();
   tickTimer();
   updateTime();
   checkAlarm1();
-  readAllBtn();
+  updateAlarmMelody();
   menuControl();
   playerControl();
   updateDisplay();
