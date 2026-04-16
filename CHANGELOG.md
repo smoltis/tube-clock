@@ -40,5 +40,11 @@
   - edited datetime + elapsed seconds `TimeSpan`
 - Session is properly closed on save completion and on idle timeout back to `TIME`.
 
+### Display: VFD-style digit transition effect
+- Added non-blocking retro glitch/shuffle transition for changing time digits in `printTime()`.
+- Each changed digit now briefly flickers old/new value, then rapidly shuffles random numerals, and settles on target.
+- Effect runs only in normal time/date display flow and does not affect settings screens.
+- Added feature flag `vfdGlitchEffectEnabled` to quickly enable/disable the effect.
+
 ### Notes
 - New dependency: `AceButton` Arduino library.

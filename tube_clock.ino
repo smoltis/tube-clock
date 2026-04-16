@@ -134,6 +134,22 @@ uint8_t alarmMelodyStep = 0;
 unsigned long alarmMelodyStepStartedAt = 0;
 uint16_t alarmMelodyStepDurationMs = 0;
 
+const bool vfdGlitchEffectEnabled = true;
+const uint8_t TIME_DIGIT_COUNT = 6;
+
+struct timeDigitFxState_t {
+  uint8_t shown;
+  uint8_t from;
+  uint8_t target;
+  uint8_t phase;
+  unsigned long phaseStart;
+  uint16_t phaseDurationMs;
+  bool active;
+};
+
+timeDigitFxState_t timeDigitFx[TIME_DIGIT_COUNT];
+bool timeDigitFxInitialized = false;
+
 bool timeEditSessionActive = false;
 unsigned long timeEditSessionMillis = 0;
 uint8_t timeEditStartSecond = 0;
@@ -292,10 +308,106 @@ void playSound(){
   }
 }
 
+void resetTimeDigitFx(const uint8_t targetDigits[TIME_DIGIT_COUNT]){
+  for (uint8_t i = 0; i < TIME_DIGIT_COUNT; i++)
+  {
+    timeDigitFx[i].shown = targetDigits[i];
+    timeDigitFx[i].from = targetDigits[i];
+    timeDigitFx[i].target = targetDigits[i];
+    timeDigitFx[i].phase = 0;
+    timeDigitFx[i].phaseStart = 0;
+    timeDigitFx[i].phaseDurationMs = 0;
+    timeDigitFx[i].active = false;
+  }
+  timeDigitFxInitialized = true;
+}
+
+void startTimeDigitTransition(uint8_t idx, uint8_t toDigit, unsigned long now){
+  timeDigitFx[idx].from = timeDigitFx[idx].shown;
+  timeDigitFx[idx].target = toDigit;
+  timeDigitFx[idx].phase = 0;
+  timeDigitFx[idx].phaseStart = now;
+  timeDigitFx[idx].phaseDurationMs = 70 + random(50); // 70..119ms flicker
+  timeDigitFx[idx].active = true;
+}
+
+uint8_t updateTimeDigitTransition(uint8_t idx, unsigned long now){
+  timeDigitFxState_t& s = timeDigitFx[idx];
+  if (!s.active){
+    return s.shown;
+  }
+
+  unsigned long elapsed = (unsigned long)(now - s.phaseStart);
+  if (s.phase == 0)
+  {
+    if (elapsed >= s.phaseDurationMs)
+    {
+      s.phase = 1;
+      s.phaseStart = now;
+      s.phaseDurationMs = 90 + random(80); // 90..169ms shuffle
+      elapsed = 0;
+    }
+    else
+    {
+      s.shown = ((elapsed / 24) % 2 == 0) ? s.from : s.target;
+      return s.shown;
+    }
+  }
+
+  if (s.phase == 1)
+  {
+    if (elapsed >= s.phaseDurationMs)
+    {
+      s.shown = s.target;
+      s.active = false;
+      return s.shown;
+    }
+
+    s.shown = (uint8_t)random(10);
+    return s.shown;
+  }
+
+  s.shown = s.target;
+  s.active = false;
+  return s.shown;
+}
+
 void printTime(){
-  printNum(secupg, 1, dotFlag);
-  printNum(minupg, 3, dotFlag);
-  printNum(hourupg, 5, dotFlag);
+  uint8_t targetDigits[TIME_DIGIT_COUNT] = {
+    (uint8_t)(secupg % 10),
+    (uint8_t)(secupg / 10),
+    (uint8_t)(minupg % 10),
+    (uint8_t)(minupg / 10),
+    (uint8_t)(hourupg % 10),
+    (uint8_t)(hourupg / 10)
+  };
+
+  if (!vfdGlitchEffectEnabled || displayState > DATE)
+  {
+    timeDigitFxInitialized = false;
+    printNum(secupg, 1, dotFlag);
+    printNum(minupg, 3, dotFlag);
+    printNum(hourupg, 5, dotFlag);
+    return;
+  }
+
+  if (!timeDigitFxInitialized)
+  {
+    resetTimeDigitFx(targetDigits);
+  }
+
+  unsigned long now = millis();
+  for (uint8_t i = 0; i < TIME_DIGIT_COUNT; i++)
+  {
+    if (targetDigits[i] != timeDigitFx[i].target)
+    {
+      startTimeDigitTransition(i, targetDigits[i], now);
+    }
+
+    uint8_t shown = updateTimeDigitTransition(i, now);
+    bool dPoint = (i == 0 || i == 2 || i == 4) ? dotFlag : false;
+    lc.setDigit(0, i, shown, dPoint);
+  }
 }
 
 void printDate(){
