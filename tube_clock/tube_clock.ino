@@ -5,6 +5,7 @@
 #include <RTClib.h> // concider uRTClib library https://protosupplies.com/product/ds3231-rtc-with-eeprom-module/#:~:text=The%20DS3231%20RTC%20chip%20is,the%20EEPROM%20is%20at%200x57.
 #include <Wire.h>
 #include <AceButton.h>
+using namespace ace_button;
 #include <MD_YX5300.h>
 #include <FastLED.h>
 #include <uEEPROMLib.h>
@@ -13,7 +14,6 @@
 // TODO: Change backlight effects by a button press
 // TODO: Add Alarms with MP3 sounds
 // TODO: Add "Speak Time" function
-// TODO: Add digit change effects i.e. running numbers or folding/fading in and out, add random glitch effect
 
 // Enable debug output - set to non-zero value to enable.
 #define DEBUG 0
@@ -27,6 +27,8 @@
 #define PRINTX(s,v)
 #define PRINTS(s)
 #endif
+
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof(x[0]))
 
 //************Pins*****************//
 const uint8_t ARDUINO_RX=4;    // connect to TX of MP3 Player module
@@ -42,7 +44,7 @@ const uint8_t MAX_POWER_MILLIAMPS=100;
 #define EEPROM_ADDR         0x57
 
 const uint8_t SW_PIN[] = { 9, 10, 11 }; // Button SET // Button + // Button -
-const uint8_t DIGITAL_SWITCH_ACTIVE = LOW;
+const uint8_t DFT_RELEASE_STATE = HIGH;
 const uint8_t BUTTON_DEBOUNCE_MS = 25;
 const uint16_t BUTTON_LONG_PRESS_MS = 600;
 const uint16_t BUTTON_REPEAT_START_MS = 350;
@@ -67,7 +69,19 @@ CRGB leds[NUM_LEDS];
 LedControl lc=LedControl(7,5,6,1);
 
 //************XY5300MP3**************//
-MD_YX5300 mp3(ARDUINO_RX, ARDUINO_TX);
+#ifndef USE_SOFTWARESERIAL
+#define USE_SOFTWARESERIAL 1   ///< Set to 1 to use SoftwareSerial library, 0 for native serial port
+#endif
+#if USE_SOFTWARESERIAL
+#include <SoftwareSerial.h>
+SoftwareSerial  MP3Stream(ARDUINO_RX, ARDUINO_TX);  // MP3 player serial stream for comms
+#define Console Serial           // command processor input/output stream
+#else
+#define MP3Stream Serial2  // Native serial port - change to suit the application
+#define Console   Serial   // command processor input/output stream
+#endif
+
+MD_YX5300 mp3(MP3Stream);
 enum playStatus_t { S_PAUSED, S_PLAYING, S_STOPPED };
 enum playMode_t { M_SEQ, M_SHUFFLE, M_LOOP, M_EJECTED };
 struct    // contains all the running status information
@@ -82,7 +96,7 @@ struct    // contains all the running status information
   uint16_t volume;        // the current audio volume
 } S;
 //************DIGITAL_BTN**************//
-using namespace ace_button;
+
 
 enum buttons {
   SET,
@@ -92,12 +106,17 @@ enum buttons {
 };
 
 enum buttons btnCtrl = NONE;
-ButtonConfig buttonConfig;
-AceButton BTN[ARRAY_SIZE(SW_PIN)] = {
-  AceButton(SW_PIN[SET], DIGITAL_SWITCH_ACTIVE, SET, &buttonConfig),
-  AceButton(SW_PIN[UP], DIGITAL_SWITCH_ACTIVE, UP, &buttonConfig),
-  AceButton(SW_PIN[DOWN], DIGITAL_SWITCH_ACTIVE, DOWN, &buttonConfig)
-};
+
+ButtonConfig* buttonConfig = ButtonConfig::getSystemButtonConfig();
+
+AceButton buttonSet(SW_PIN[SET], DFT_RELEASE_STATE, SET);
+AceButton buttonUp(SW_PIN[UP], DFT_RELEASE_STATE, UP);
+AceButton buttonDn(SW_PIN[DOWN], DFT_RELEASE_STATE, DOWN);
+
+AceButton* BTN[] = { &buttonSet, &buttonUp, &buttonDn };
+// Forward reference to prevent Arduino compiler becoming confused.
+void handleButtonEvent(AceButton*, uint8_t, uint8_t);
+
 //************RTC_DS3231**************//
 RTC_DS3231 rtc;
 
@@ -427,7 +446,7 @@ void printAlarm1(){
   printChar('A', 5);
   printChar('1', 4, isAlarm1_enabled);
   printNum(alarm1_h, 3, dotFlag);
-  printNum(alarm1_m, );
+  printNum(alarm1_m, 1, false);
 }
 
 ////////////////////////////////////////LED//////////////////////////////////////////
@@ -749,7 +768,7 @@ void handleButtonEvent(AceButton* button, uint8_t eventType, uint8_t buttonState
 void readAllBtn(){
   for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
   {
-    BTN[i].check();
+    BTN[i]->check();
   }
 }
 
@@ -805,7 +824,7 @@ void updateDisplay(){
 
 void updateLeds(){
   if (displayState == TIME || displayState == DATE){
-    if (upgmin == alarm1_m and upghour == alarm1_h and isAlarm1_enabled){
+    if (minupg == alarm1_m and hourupg == alarm1_h and isAlarm1_enabled){
       if (dotFlag){
         setLedsAllRed();
       }
@@ -1083,20 +1102,23 @@ void saveAlarm1NVRam(){
 /////////////////////////////////////SETUP/////////////////////////////////////
 void setup() {
   Serial.begin(115200);
-
-  buttonConfig.setEventHandler(handleButtonEvent);
-  buttonConfig.setFeature(ButtonConfig::kFeatureLongPress);
-  buttonConfig.setFeature(ButtonConfig::kFeatureRepeatPress);
-  buttonConfig.setFeature(ButtonConfig::kFeatureSuppressAfterLongPress);
-  buttonConfig.setDebounceDelay(BUTTON_DEBOUNCE_MS);
-  buttonConfig.setLongPressDelay(BUTTON_LONG_PRESS_MS);
-  buttonConfig.setRepeatPressDelay(BUTTON_REPEAT_START_MS);
-  buttonConfig.setRepeatPressInterval(BUTTON_REPEAT_INTERVAL_MS);
-
-  for (uint8_t i = 0; i < ARRAY_SIZE(BTN); i++)
+  
+  // Buttons use the built-in pull up register.
+  for (uint8_t i = 0; i < ARRAY_SIZE(SW_PIN); i++)
   {
     pinMode(SW_PIN[i], INPUT_PULLUP);
   }
+
+  buttonConfig->setEventHandler(handleButtonEvent);
+  buttonConfig->setFeature(ButtonConfig::kFeatureLongPress);
+  buttonConfig->setFeature(ButtonConfig::kFeatureRepeatPress);
+  buttonConfig->setFeature(ButtonConfig::kFeatureSuppressAfterLongPress);
+  buttonConfig->setDebounceDelay(BUTTON_DEBOUNCE_MS);
+  buttonConfig->setLongPressDelay(BUTTON_LONG_PRESS_MS);
+  buttonConfig->setRepeatPressDelay(BUTTON_REPEAT_START_MS);
+  buttonConfig->setRepeatPressInterval(BUTTON_REPEAT_INTERVAL_MS);
+
+
   pinMode(BUZZER_PIN, OUTPUT);
   noTone(BUZZER_PIN);
   
